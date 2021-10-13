@@ -1,0 +1,101 @@
+name: Release
+
+on: [push]
+
+jobs:
+  build:
+    name: Release binary for ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux
+            binary_path: rs/target/release
+            binary_files: replica nodemanager
+            rust: 1.52.1
+          - os: macos-latest
+            binary_path: rs/target/release
+            binary_files: replica nodemanager
+            name: macos
+            rust: 1.52.1
+    steps:
+    - uses: actions/checkout@master
+
+    - name: Setup environment variables
+      run: |
+        echo "SHA_SHORT=${GITHUB_SHA::7}" >> $GITHUB_ENV
+        echo "OPENSSL_STATIC=yes" >> $GITHUB_ENV
+        binaries=$(echo ${{ matrix.binary_files }} | xargs -n1 echo "--bin"|xargs)
+        echo "cargo_build_ARGS<<END" >> $GITHUB_ENV
+        echo "--release $binaries" >> $GITHUB_ENV
+        echo "END" >> $GITHUB_ENV
+
+    - name: Install Linux dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install librocksdb-dev libzstd-dev
+        echo "ZSTD_LIB_DIR=/usr/lib" >> $GITHUB_ENV
+        echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu/" >> $GITHUB_ENV
+        echo "OPENSSL_INCLUDE_DIR=/usr/include/" >> $GITHUB_ENV
+      if: contains(matrix.os, 'ubuntu')
+
+    - name: Build lmdb statically
+      run: |
+        git clone https://git.openldap.org/openldap/openldap.git
+        cd openldap
+        git reset --hard a99290f253a8df45679c8e2b159e83b835e8eb24
+        cd libraries/liblmdb
+        make liblmdb.a
+        out=/usr/local
+        sudo mkdir -p $out/lib $out/lmdb/include
+        sudo cp liblmdb.a $out/lib/
+        sudo cp lmdb.h $out/lmdb/include/
+        sudo mkdir -p "$out/lib/pkgconfig"
+        sudo bash -c "cat > $out/lib/pkgconfig/lmdb.pc" <<EOF
+        Name: lmdb
+        Description: Lightning memory-mapped database
+        Version: "0.9.26"
+        Cflags: -I$out/lmdb/include
+        Libs: -L$out/lib -llmdb -lpthread
+        EOF
+        echo "PKG_CONFIG_PATH=$out/lib/pkgconfig" >> $GITHUB_ENV
+
+    - name: Install toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: ${{ matrix.rust }}
+        override: true
+
+    - name: Build
+      uses: marcopolo/cargo@master
+      with:
+        command: build
+        args: ${{ env.cargo_build_ARGS }}
+        working-directory: rs
+
+    - name: Post build
+      run: |
+        cd ${{ matrix.binary_path }}
+        strip ${{ matrix.binary_files }}
+        ldd replica
+      if: contains(matrix.os, 'ubuntu')
+
+    - name: Post build
+      run: |
+        cd ${{ matrix.binary_path }}
+        otool -L replica
+      if: contains(matrix.os, 'macos')
+
+    - name: Create tarball of binaries
+      run: tar -zcC ${{ matrix.binary_path }} -f binaries.tar.gz ${{ matrix.binary_files }}
+
+    - name: Upload tarball
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: binaries.tar.gz
+        asset_name: binaries-${{ matrix.name }}.tar.gz
+        tag: ${{ env.SHA_SHORT }}
