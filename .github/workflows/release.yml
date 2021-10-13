@@ -43,10 +43,13 @@ jobs:
 
     - name: Build lmdb statically
       run: |
+        topdir="$PWD"
         git clone https://git.openldap.org/openldap/openldap.git
         cd openldap
         git reset --hard a99290f253a8df45679c8e2b159e83b835e8eb24
         cd libraries/liblmdb
+        patch -p3 < ${topdir}/gitlab-ci/patches/lmdb/unused_read.patch
+        patch -p3 < ${topdir}/gitlab-ci/patches/lmdb/debug.patch
         make liblmdb.a
         out=/usr/local
         sudo mkdir -p $out/lib $out/lmdb/include
